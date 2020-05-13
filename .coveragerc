@@ -1,0 +1,10 @@
+[run]
+parallel = true
+branch = true
+source = os_scrapy_rq_crawler
+
+[paths]
+source =
+    os_scrapy_rq_crawler
+    .tox/*/lib/python*/site-packages/os_scrapy_rq_crawler
+    .tox/*/site-packages/os_scrapy_rq_crawler
