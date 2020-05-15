@@ -4,6 +4,7 @@
 # your spiders.
 
 import scrapy
+
 from os_scrapy_rq_crawler.items import ExampleItem
 
 

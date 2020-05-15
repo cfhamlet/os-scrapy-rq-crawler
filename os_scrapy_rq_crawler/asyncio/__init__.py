@@ -1,7 +1,8 @@
-from os_scrapy_rq_crawler.crawler import Crawler as BaseCrawler
 from twisted.internet import defer
 
-SUPPORT_REACTOR = "twisted.internet.asyncioreactor.AsyncioSelectorReactor"
+from os_scrapy_rq_crawler.crawler import Crawler as BaseCrawler
+
+SUPPORTED_REACTOR = "twisted.internet.asyncioreactor.AsyncioSelectorReactor"
 BASE_MODULE_PATH = __loader__.name
 
 
@@ -18,6 +19,6 @@ class Crawler(BaseCrawler):
 
         which = f"{reactor.__module__}.{reactor.__class__.__name__}"
         assert (
-            which == SUPPORT_REACTOR
-        ), f"{which} is not supported, must use {SUPPORT_REACTOR}"
+            which == SUPPORTED_REACTOR
+        ), f"{which} is not supported, must use {SUPPORTED_REACTOR}"
         yield super(Crawler, self).crawl(*args, **kwargs)

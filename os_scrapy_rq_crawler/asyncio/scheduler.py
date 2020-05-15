@@ -1,6 +1,7 @@
-from os_scrapy_rq_crawler.asyncio.rq import DeferredAsyncRQ
 from scrapy.core.scheduler import Scheduler as ScrapyScheduler
 from twisted.internet import defer
+
+from os_scrapy_rq_crawler.asyncio.rq import DeferredAsyncRQ
 
 
 class Scheduler(object):
