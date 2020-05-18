@@ -1,10 +1,16 @@
 import asyncio
-from urllib.parse import urljoin
+import random
+from collections import namedtuple
+from urllib.parse import urljoin, urlparse
 
 import aiohttp
 import async_timeout
+from queuelib import queue
 from scrapy.http.request import Request
+from scrapy.utils.defer import maybeDeferred_coro
 from twisted.internet import defer
+
+from os_scrapy_rq_crawler.utils import qid_from_request
 
 try:
     import ujson as json
@@ -102,3 +108,127 @@ def request_from_json(
         flags=flags,
         cb_kwargs=cb_kwargs,
     )
+
+
+class Pool(object):
+    def __init__(self, size):
+        assert size > 0
+        self.pool = asyncio.Queue()
+        self.count = 0
+        self.size = size
+        self.paused = asyncio.Event()
+
+    def pause(self):
+        self.paused.clear()
+
+    def unpause(self):
+        self.paused.set()
+
+    def maybeDeferred(self, f, *args, **kwargs):
+        return maybeDeferred_coro(self.maybeFuture(f, *args, **kwargs))
+
+    def maybeFuture(self, f, *args, **kwargs):
+        async def _call():
+            if self.count < self.size:
+                self.count += 1
+                try:
+                    await self.pool.put(self.count)
+                except asyncio.CancelledError:
+                    self.count -= 1
+                    raise
+            try:
+                q = await self.pool.get()
+            except asyncio.CancelledError:
+                raise
+
+            try:
+                await self.paused.wait()
+                r = await as_future(maybeDeferred_coro(f, *args, **kwargs))
+            finally:
+                self.pool.task_done()
+                await asyncio.shield(self.pool.put(q))
+            return r
+
+        return asyncio.ensure_future(_call())
+
+
+DEFAULT_SCHEME_PORT = {
+    "http": "80",
+    "https": "443",
+    "ftp": "21",
+    "ssh": "22",
+}
+
+
+class QueueID(namedtuple("QueueID", "host port scheme")):
+    def __str__(self):
+        return ":".join(self)
+
+
+def qid_from_request(request: Request):
+    return qid_from_url(request.url)
+
+
+def qid_from_string(s: str):
+    c = s.split(":")
+    assert len(c) == 3
+    return QueueID(*c)
+
+
+def qid_from_url(url: str):
+    t = url.find("/", 8)
+    if t > 0:
+        url = url[0 : t + 1]
+    p = urlparse(url)
+    host = p.hostname
+    port = str(p.port) if p.port is not None else ""
+    scheme = p.scheme
+    if scheme in DEFAULT_SCHEME_PORT:
+        if DEFAULT_SCHEME_PORT[scheme] == port:
+            port = ""
+    return QueueID(host, port, scheme)
+
+
+
+
+
+
+class MemoryRequestQueue(object):
+    def __init__(self):
+        self._queues = {}
+        self._num = 0
+
+    def queues(self, k=10):
+        return random.select(self._queues.keys(), k)
+
+    def push(self, request):
+        qid = qid_from_request(request)
+        if qid not in self._queues:
+            self._queues[qid] = queue.FifoMemoryQueue()
+        self._queues[qid].push(request)
+        self._num += 1
+
+    def pop(self, qid=None):
+        if not self._queues:
+            return None
+        if qid is None:
+            qid = random.choice(self.queues.keys())
+        elif qid not in self._queues:
+            return None
+        queue = self._queues[qid]
+        request = queue.pop()
+        if len(queue) <= 0:
+            del self._queues[qid]
+            queue.close()
+        self.num -= 1
+        return request
+
+    def __len__(self):
+        return self._num
+
+    def close(self):
+        active = []
+        for p, q in self.queues.items():
+            active.append(p)
+            q.close()
+        return active
