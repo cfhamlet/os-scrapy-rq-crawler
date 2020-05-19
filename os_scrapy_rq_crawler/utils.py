@@ -10,8 +10,6 @@ from scrapy.http.request import Request
 from scrapy.utils.defer import maybeDeferred_coro
 from twisted.internet import defer
 
-from os_scrapy_rq_crawler.utils import qid_from_request
-
 try:
     import ujson as json
 except:
@@ -189,10 +187,6 @@ def qid_from_url(url: str):
     return QueueID(host, port, scheme)
 
 
-
-
-
-
 class MemoryRequestQueue(object):
     def __init__(self):
         self._queues = {}
@@ -201,11 +195,15 @@ class MemoryRequestQueue(object):
     def queues(self, k=10):
         return random.select(self._queues.keys(), k)
 
-    def push(self, request):
+    def push(self, request, head=False):
         qid = qid_from_request(request)
         if qid not in self._queues:
             self._queues[qid] = queue.FifoMemoryQueue()
-        self._queues[qid].push(request)
+        q = self._queues[qid]
+        f = q.push
+        if head:
+            f = q.q.appendleft
+        f(request)
         self._num += 1
 
     def pop(self, qid=None):
@@ -220,7 +218,7 @@ class MemoryRequestQueue(object):
         if len(queue) <= 0:
             del self._queues[qid]
             queue.close()
-        self.num -= 1
+        self._num -= 1
         return request
 
     def __len__(self):

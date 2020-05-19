@@ -1,11 +1,12 @@
 import asyncio
+import logging
 import random
 import time
 import warnings
 
-from scrapy.utils.log import logger
-
 from os_scrapy_rq_crawler.utils import as_deferred, queues_from_rq, request_from_rq
+
+logger = logging.getLogger(__name__)
 
 
 class DeferredAsyncRQ(object):

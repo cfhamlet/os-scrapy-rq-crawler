@@ -1,7 +1,10 @@
+import logging
+
 from scrapy.crawler import Crawler as ScrapyCrawler
 from scrapy.settings import Settings
-from scrapy.utils.log import logger
 from scrapy.utils.misc import load_object
+
+logger = logging.getLogger(__name__)
 
 
 class Crawler(ScrapyCrawler):

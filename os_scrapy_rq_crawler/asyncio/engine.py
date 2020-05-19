@@ -13,6 +13,11 @@ from os_scrapy_rq_crawler.utils import Pool
 logger = logging.getLogger(__name__)
 
 
+class NextCall(object):
+    def schedule(self):
+        pass
+
+
 class Slot(object):
     def __init__(
         self, engine: "Engine", spider, scheduler, start_requests, close_if_idle: bool
@@ -20,9 +25,11 @@ class Slot(object):
         self.engine = engine
         self.spider = spider
         self.closing = False
+        self.close_wait = None
         self.inprogress = set()
         self.close_if_idle = close_if_idle
         self.scheduler = scheduler
+        self.nextcall = NextCall()
         self.start_requests = iter(start_requests)
         self.tasks = []
 
@@ -46,23 +53,26 @@ class Slot(object):
             try:
                 await asyncio.sleep(5)
             except asyncio.CancelledError:
-                logger.debug("close idle cancelled")
+                logger.debug("close idle task cancelled")
                 break
 
     async def _load_start_requests(self):
         if self.start_requests:
             for request in self.start_requests:
                 try:
-                    await self.engine.pool.maybeFuture(
+                    await self.engine.future_in_pool(
                         self.engine.crawl, request, self.spider
                     )
                 except asyncio.CancelledError:
-                    logger.warn("load start requests cancelled")
+                    logger.warn("load start requests task cancelled")
                     break
         self.start_requests = None
 
     def close(self):
-        self.closing = defer.Deferred()
+        if self.closing:
+            return self.closing
+        self.close_wait = defer.Deferred()
+        dlist = [self.close_wait]
         for task in self.tasks:
             if task and not task.done():
                 task.cancel()
@@ -70,20 +80,22 @@ class Slot(object):
             async def wait(coro):
                 await coro
 
-            self.closing.chainDeferred(maybeDeferred_coro(wait, task))
+            dlist.append(maybeDeferred_coro(wait, task))
 
+        dlist.append(self.scheduler.stop())
+        self.closing = defer.DeferredList(dlist)
         self._maybe_fire_closing()
         return self.closing
 
     def _maybe_fire_closing(self):
         if self.closing and not self.inprogress:
-            self.closing.callback(None)
+            self.close_wait.callback(None)
 
 
 class Engine(ExecutionEngine):
     def __init__(self, crawler, spider_closed_callback):
         super(Engine, self).__init__(crawler, spider_closed_callback)
-        self.pool = Pool(self.crawler.settings.getint("CONCURRENT_REQUESTS", 16))
+        self._pool = Pool(self.crawler.settings.getint("CONCURRENT_REQUESTS", 16))
 
     @defer.inlineCallbacks
     def open_spider(self, spider, start_requests=(), close_if_idle=True):
@@ -107,16 +119,20 @@ class Engine(ExecutionEngine):
         self.start_time = time()
         yield self.signals.send_catch_log_deferred(signal=signals.engine_started)
         self.running = True
+        yield self.slot.scheduler.start()
         yield self.slot.start()
         self.unpause()
         self._closewait = defer.Deferred()
         yield self._closewait
 
+    def future_in_pool(self, f, *args, **kwargs):
+        return self._pool.maybeFuture(f, *args, **kwargs)
+
     def pause(self):
-        self.pool.pause()
+        self._pool.pause()
 
     def unpause(self):
-        self.pool.unpause()
+        self._pool.unpause()
 
     def crawl(self, request, spider):
         if spider not in self.open_spiders:
