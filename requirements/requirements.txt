@@ -2,3 +2,4 @@ os-scrapy>=0.0.4
 aiohttp==3.6.2
 cchardet==2.1.5
 aiodns==2.0.0
+expiringdict>=1.2.0

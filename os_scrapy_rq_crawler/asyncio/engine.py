@@ -4,11 +4,10 @@ from time import time
 
 from scrapy import signals
 from scrapy.core.engine import ExecutionEngine
-from scrapy.utils.defer import maybeDeferred_coro
 from scrapy.utils.log import failure_to_exc_info
 from twisted.internet import defer
 
-from os_scrapy_rq_crawler.utils import Pool
+from os_scrapy_rq_crawler.utils import Pool, cancel_futures
 
 logger = logging.getLogger(__name__)
 
@@ -45,27 +44,30 @@ class Slot(object):
             self.tasks.append(asyncio.ensure_future(f()))
 
     async def _close_idle(self):
-        self.engine._spider_idle(self.spider)
         while self.close_if_idle and self.engine.slot:
             if self.engine.spider_is_idle(self.spider):
                 self.engine._spider_idle(self.spider)
-                break
             try:
-                await asyncio.sleep(5)
+                await asyncio.sleep(3)
             except asyncio.CancelledError:
-                logger.debug("close idle task cancelled")
                 break
+        logger.debug("close idle task stopped")
 
     async def _load_start_requests(self):
-        if self.start_requests:
-            for request in self.start_requests:
-                try:
-                    await self.engine.future_in_pool(
-                        self.engine.crawl, request, self.spider
-                    )
-                except asyncio.CancelledError:
-                    logger.warn("load start requests task cancelled")
-                    break
+        count = 0
+        for request in self.start_requests:
+            count += 1
+            try:
+                await self.engine.future_in_pool(
+                    self.engine.crawl, request, self.spider
+                )
+                logger.debug(f"load start request {count} {request}")
+            except asyncio.CancelledError:
+                logger.warn("load start requests task cancelled")
+                break
+            except Exception as e:
+                logger.error(f"load start request fail {request} {e}")
+        logger.debug(f"load start requests stopped {count}")
         self.start_requests = None
 
     def close(self):
@@ -73,23 +75,21 @@ class Slot(object):
             return self.closing
         self.close_wait = defer.Deferred()
         dlist = [self.close_wait]
-        for task in self.tasks:
-            if task and not task.done():
-                task.cancel()
-
-            async def wait(coro):
-                await coro
-
-            dlist.append(maybeDeferred_coro(wait, task))
-
+        dlist.append(cancel_futures(self.tasks))
         dlist.append(self.scheduler.stop())
         self.closing = defer.DeferredList(dlist)
         self._maybe_fire_closing()
         return self.closing
 
     def _maybe_fire_closing(self):
-        if self.closing and not self.inprogress:
-            self.close_wait.callback(None)
+        if (
+            self.closing
+            and not self.inprogress
+            and self.engine.spider_is_idle(self.spider)
+        ):
+            if self.close_wait:
+                self.close_wait.callback(None)
+                self.close_wait = None
 
 
 class Engine(ExecutionEngine):

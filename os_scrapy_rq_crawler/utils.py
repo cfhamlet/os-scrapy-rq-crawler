@@ -187,13 +187,22 @@ def qid_from_url(url: str):
     return QueueID(host, port, scheme)
 
 
+def class_fullname(cls):
+    return f"{cls.__module__}.{cls.__name__}"
+
+
 class MemoryRequestQueue(object):
     def __init__(self):
         self._queues = {}
         self._num = 0
 
-    def queues(self, k=10):
-        return random.select(self._queues.keys(), k)
+    def qids(self, k=10):
+        return random.sample(self._queues.keys(), min(k, len(self._queues)))
+
+    def qsize(self, qid):
+        if qid not in self._queues:
+            return 0
+        return len(self._queues[qid])
 
     def push(self, request, head=False):
         qid = qid_from_request(request)
@@ -210,7 +219,7 @@ class MemoryRequestQueue(object):
         if not self._queues:
             return None
         if qid is None:
-            qid = random.choice(self.queues.keys())
+            qid = random.choice(list(self._queues.keys()))
         elif qid not in self._queues:
             return None
         queue = self._queues[qid]
@@ -226,7 +235,16 @@ class MemoryRequestQueue(object):
 
     def close(self):
         active = []
-        for p, q in self.queues.items():
+        for p, q in self._queues.items():
             active.append(p)
             q.close()
         return active
+
+
+def cancel_futures(futures):
+    dlist = []
+    for future in futures:
+        if not future.done() and not future.cancelled():
+            future.cancel()
+        dlist.append(maybeDeferred_coro(lambda: future))
+    return defer.DeferredList(dlist)

@@ -18,7 +18,7 @@ class ExampleSpider(scrapy.Spider):
 
     name = "example"
 
-    start_urls = ["http://example.com/"]
+    start_urls = ["http://xdsfdfexample.com/"]
 
     def parse(self, response):
         yield ExampleItem(
