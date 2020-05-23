@@ -45,11 +45,11 @@ class Slot(object):
 
     async def _close_idle(self):
         while self.close_if_idle and self.engine.slot:
-            if self.engine.spider_is_idle(self.spider):
-                self.engine._spider_idle(self.spider)
+            self._maybe_fire_closing()
             try:
                 await asyncio.sleep(3)
             except asyncio.CancelledError:
+                logger.debug("cancel close idle task")
                 break
         logger.debug("close idle task stopped")
 
@@ -82,11 +82,10 @@ class Slot(object):
         return self.closing
 
     def _maybe_fire_closing(self):
-        if (
-            self.closing
-            and not self.inprogress
-            and self.engine.spider_is_idle(self.spider)
-        ):
+        if not self.closing:
+            if self.close_if_idle and self.engine.spider_is_idle(self.spider):
+                self.engine._spider_idle(self.spider)
+        elif not self.inprogress and self.engine.spider_is_idle(self.spider):
             if self.close_wait:
                 self.close_wait.callback(None)
                 self.close_wait = None
@@ -141,9 +140,11 @@ class Engine(ExecutionEngine):
             )
         self.schedule(request, spider)
 
-    def fetch(self, request, spider):
+    def fetch(self, request, spider, on_downloaded=None):
         slot = self.slot
         d = self._download(request, spider)
+        if on_downloaded:
+            d.addBoth(on_downloaded, request, spider)
         d.addBoth(self._handle_downloader_output, request, spider)
         d.addErrback(
             lambda f: logger.info(

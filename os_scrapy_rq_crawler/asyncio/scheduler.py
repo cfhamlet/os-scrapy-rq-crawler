@@ -2,13 +2,19 @@ import asyncio
 import inspect
 import logging
 import random
+import time
 from collections import OrderedDict
 from typing import Optional
 
-from expiringdict import ExpiringDict
+import async_timeout
 from scrapy.utils.misc import create_instance, load_object
 
-from os_scrapy_rq_crawler.utils import as_future, cancel_futures, class_fullname
+from os_scrapy_rq_crawler.utils import (
+    QueueID,
+    as_future,
+    cancel_futures,
+    class_fullname,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -16,13 +22,13 @@ logger = logging.getLogger(__name__)
 class Slot(object):
     __slots__ = ("slot_id", "scheduler", "qids", "task")
 
-    def __init__(self, scheduler, slot_id):
+    def __init__(self, scheduler, slot_id: str):
         self.slot_id = slot_id
         self.scheduler = scheduler
         self.qids = None
         self.task = None
 
-    def remove_qid(self, qid):
+    def remove_qid(self, qid: QueueID):
         if self.qids is None:
             return
         elif not isinstance(self.qids, set):
@@ -32,8 +38,10 @@ class Slot(object):
             self.qids.remove(qid)
             if len(self.qids) == 1:
                 self.qids = self.qids.pop()
+        if qid in self.scheduler.qids:
+            self.scheduler.qids.pop(qid)
 
-    def add_qid(self, qid):
+    def add_qid(self, qid: QueueID):
         if self.qids is None:
             self.qids = qid
         elif not isinstance(self.qids, set):
@@ -41,21 +49,29 @@ class Slot(object):
                 self.qids = set([self.qids, qid])
         else:
             self.qids.add(qid)
+        if qid not in self.scheduler.qids:
+            self.scheduler.qids[qid] = (self.slot_id, time.time())
 
     def start(self):
         if self.task is None:
             self.task = asyncio.ensure_future(self._schedule())
 
     def _clear(self):
-        if self.task:
-            self.qids = None
-            self.task = None
-            self.scheduler.slots.pop(self.slot_id, None)
+        if not self.task:
+            return
+        if self.qids:
+            if not isinstance(self.qids, set):
+                list(self.qids)
+            else:
+                [self.qids]
+            for qid in self.qids:
+                self.remove_qid(qid)
+        self.task = None
+        self.scheduler.slots.pop(self.slot_id, None)
 
     async def schedule(self) -> Optional[float]:
         if not self.qids:
             return
-
         qid = self.qids
         if isinstance(qid, set):
             qid = random.choice(list(qid))
@@ -75,7 +91,7 @@ class Slot(object):
     def next_loop(self) -> bool:
         return bool(self.qids)
 
-    def log(self, msg, lvl=logging.DEBUG):
+    def log(self, msg: str, lvl=logging.DEBUG):
         logger.log(lvl, f"{self.slot_id} {msg}")
 
     async def _schedule(self):
@@ -92,12 +108,12 @@ class Slot(object):
             except Exception as e:
                 self.log(f"unexpect error {e}", logging.ERROR)
                 break
-        self.log("slot schedule stopped")
         self._clear()
+        self.log("slot schedule stopped")
 
 
 class Scheduler(object):
-    def __init__(self, crawler, rq, stats=None):
+    def __init__(self, crawler, rq, max_slots, standby_slots, stats=None):
         self.crawler = crawler
         self.settings = crawler.settings
         self.rq = rq
@@ -105,35 +121,43 @@ class Scheduler(object):
         self.engine = crawler.engine
         self.stopping = False
         self.slots = OrderedDict()
-        self.dispatch_queue = None
+        self.dispatch_queue: Optional[asyncio.Queue] = None
         self.start_requests_event = None
         self.tasks = []
         self.ip_concurrency = self.settings.getint("CONCURRENT_REQUESTS_PER_IP")
-        standby_slots = self.settings.getint("STANDBY_SLOTS")
-        if not standby_slots:
-            standby_slots = self.settings.getint("CONCURRENT_REQUESTS", 16) / 4
-        self.standby_slots = int(standby_slots) if int(standby_slots) > 0 else 1
-        self.qids_cache = ExpiringDict(max_len=10000, max_age_seconds=60)
+        self.max_slots = max_slots
+        self.standby_slots = standby_slots
+        self.qids = {}
 
     def should_stop(self) -> bool:
         return self.stopping and self.engine.spider_is_idle(self.spider)
 
-    async def _dispatch_slot(self, qid):
-        if not qid or qid in self.qids_cache:
+    def standby_slot_id(self, qid: QueueID):
+        slot_id = "standby"
+        if self.standby_slots == 1:
+            pass
+        elif self.standby_slots > 1:
+            slot_id = f"standby_{hash(qid.host) % self.standby_slots}"
+        else:
+            slot_id = str(qid)
+        return slot_id
+
+    async def _dispatch_slot(self, qid: QueueID):
+        if not qid or qid in self.qids:
             return
         from twisted.internet import reactor
 
-        slot_id = qid.host
+        slot_id = str(qid)
         if self.ip_concurrency:
             d = reactor.resolver.getHostByName(qid.host)
             try:
-                slot_id = await as_future(d)
+                ip = await as_future(d)
+                slot_id = ":".join((ip, qid.port, qid.scheme))
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                slot_id = f"standby_{hash(qid.host) % self.standby_slots}"
+                slot_id = self.standby_slot_id(qid)
                 logger.warn(f"get slot fail {qid} {e} use {slot_id}")
-        self.qids_cache[qid] = 0
         if slot_id not in self.slots:
             logger.debug(f"new slot {slot_id} {qid.host}")
             slot = Slot(self, slot_id)
@@ -141,12 +165,16 @@ class Scheduler(object):
             self.slots[slot_id] = slot
         self.slots[slot_id].add_qid(qid)
 
-    async def _dispatch(self):
+    async def _dispatch(self, did):
 
         while not self.should_stop():
             try:
-                qid = await self.dispatch_queue.get()
-            except asyncio.CancelledError:
+                if self.stopping:
+                    with async_timeout.timeout(0.3):
+                        qid = await self.dispatch_queue.get()
+                else:
+                    qid = await self.dispatch_queue.get()
+            except (asyncio.CancelledError, asyncio.TimeoutError):
                 continue
             try:
                 await self._dispatch_slot(qid)
@@ -156,6 +184,7 @@ class Scheduler(object):
                 logger.error(f"dispatch error {qid} {e}")
             finally:
                 self.dispatch_queue.task_done()
+        logger.debug(f"dispatch task-{did} stopped")
 
     def open(self, spider):
         self.spider = spider
@@ -170,14 +199,18 @@ class Scheduler(object):
         if self.start_requests_event:
             await self.start_requests_event.wait()
             self.start_requests_event = None
-        qids = self.rq.qids()
-        if qids:
-            if inspect.isawaitable(qids):
-                qids = await qids
-            for qid in qids:
-                if qid not in self.qids_cache:
-                    await self.dispatch_queue.put(qid)
-        await asyncio.sleep(1)
+        s = time.time()
+        if len(self.slots) < self.max_slots:
+            qids = self.rq.qids()
+            if qids:
+                if inspect.isawaitable(qids):
+                    qids = await qids
+                for qid in qids:
+                    if qid not in self.qids:
+                        await self.dispatch_queue.put(qid)
+        cost = time.time() - s
+        if cost < 1:
+            await asyncio.sleep(1 - cost)
 
     def start(self):
         logger.debug("Start")
@@ -188,8 +221,8 @@ class Scheduler(object):
             "SCHEDULE_DISPATCH_TASKS", self.standby_slots
         )
         self.dispatch_queue = asyncio.Queue(num)
-        for _ in range(num):
-            self.tasks.append(asyncio.ensure_future(self._dispatch()))
+        for did in range(num):
+            self.tasks.append(asyncio.ensure_future(self._dispatch(did)))
 
     async def _schedule(self):
         while not self.should_stop():
@@ -197,13 +230,12 @@ class Scheduler(object):
                 await self.update_slots()
             except asyncio.CancelledError:
                 logger.debug("cancel schedule task")
-                continue
             except Exception as e:
                 logger.error(f"schedule {e}")
         logger.debug(f"schedule task stopped")
 
     def next_request(self, qid=None):
-        return self.rq.pop()
+        return self.rq.pop(qid)
 
     def future_in_pool(self, f, *args, **kwargs):
         return self.engine.future_in_pool(f, *args, **kwargs)
@@ -221,7 +253,10 @@ class Scheduler(object):
         )
         rq = create_instance(rq_cls, settings, crawler)
         logger.debug(f"Using request queue: {class_fullname(rq_cls)}")
-        return cls(crawler, rq, crawler.stats)
+        concurrent = settings.getint("CONCURRENT_REQUESTS", 16)
+        max_slots = settings.getint("SCHEDULER_MAX_SLOTS", concurrent * 4)
+        standby_slots = settings.getint("SCHEDULER_STANDBY_SLOTS", int(concurrent / 4))
+        return cls(crawler, rq, max_slots, standby_slots, crawler.stats)
 
     def enqueue_request(self, request, head=False):
         if self.start_requests_event and not self.start_requests_event.is_set():
