@@ -71,7 +71,7 @@ async def raw_request_from_rq(api, qid, timeout=0):
     return status, ret, api_url
 
 
-async def raw_queues_from_rq(api, k=10, timeout=0):
+async def raw_queues_from_rq(api, k=16, timeout=0):
     api_url = urljoin(api, "queues/?k=%d" % k)
     status, ret = await post_rq(api_url, timeout=timeout)
     return status, ret, api_url
@@ -198,7 +198,7 @@ class MemoryRequestQueue(object):
         self._queues = {}
         self._num = 0
 
-    def qids(self, k=10):
+    def qids(self, k=16):
         return random.sample(self._queues.keys(), min(k, len(self._queues)))
 
     def qsize(self, qid):
@@ -241,6 +241,34 @@ class MemoryRequestQueue(object):
             active.append(p)
             q.close()
         return active
+
+
+class HTTPRequestQueue(object):
+    def __init__(self, api, timeout=0):
+        self.api = api
+        self.timeout = timeout
+
+    async def qids(self, k=16):
+        status, ret, api_url = await queues_from_rq(self.api, k, self.timeout)
+        if status == 200:
+            qids = []
+            for q in ret["queues"]:
+                qids.append(qid_from_string(q["qid"]))
+            return qids
+
+    async def pop(self, qid):
+        status, ret, api_url = await request_from_rq(self.api, str(qid), self.timeout)
+        if status == 200:
+            return ret
+
+    def push(self, request):
+        pass
+
+    def __len__(self):
+        return 1
+
+    def close(self):
+        pass
 
 
 def cancel_futures(futures):
