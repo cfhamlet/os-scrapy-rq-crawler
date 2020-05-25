@@ -200,8 +200,9 @@ class Scheduler(object):
             await self.start_requests_event.wait()
             self.start_requests_event = None
         s = time.time()
-        if len(self.slots) < self.max_slots:
-            qids = self.rq.qids()
+        k = self.max_slots - len(self.slots)
+        if k > 0:
+            qids = self.rq.qids(k=k)
             if qids:
                 if inspect.isawaitable(qids):
                     qids = await qids
@@ -217,12 +218,13 @@ class Scheduler(object):
         if self.engine.slot.start_requests:
             self.start_requests_event = asyncio.Event()
         self.tasks.append(asyncio.ensure_future(self._schedule()))
-        num = self.crawler.settings.getint(
+        dsp = self.crawler.settings.getint(
             "SCHEDULE_DISPATCH_TASKS", self.standby_slots
         )
-        self.dispatch_queue = asyncio.Queue(num)
-        for did in range(num):
-            self.tasks.append(asyncio.ensure_future(self._dispatch(did)))
+        dsp = int(dsp) if dsp > 1 else 1
+        self.dispatch_queue = asyncio.Queue(dsp)
+        for i in range(dsp):
+            self.tasks.append(asyncio.ensure_future(self._dispatch(i)))
 
     async def _schedule(self):
         while not self.should_stop():
@@ -253,9 +255,16 @@ class Scheduler(object):
         )
         rq = create_instance(rq_cls, settings, crawler)
         logger.debug(f"Using request queue: {class_fullname(rq_cls)}")
-        concurrent = settings.getint("CONCURRENT_REQUESTS", 16)
-        max_slots = settings.getint("SCHEDULER_MAX_SLOTS", concurrent * 4)
-        standby_slots = settings.getint("SCHEDULER_STANDBY_SLOTS", int(concurrent / 4))
+        concurrency = settings.getint("CONCURRENT_REQUESTS", 16)
+        delay = settings.getint("DOWNLOAD_DELAY")
+        max_slots = settings.getint(
+            "SCHEDULER_MAX_SLOTS", concurrency * (delay if delay > 0 else 3)
+        )
+        assert max_slots > 1, f"SCHEDULER_MAX_SLOTS({max_slots}) must > 1"
+        standby_slots = settings.getint("SCHEDULER_STANDBY_SLOTS", int(concurrency / 4))
+        logger.debug(
+            f"max_slots:{max_slots} standby_slots:{standby_slots} concurrency:{concurrency}"
+        )
         return cls(crawler, rq, max_slots, standby_slots, crawler.stats)
 
     def enqueue_request(self, request):
