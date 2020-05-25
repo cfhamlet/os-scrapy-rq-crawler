@@ -7,6 +7,7 @@ from collections import OrderedDict
 from typing import Optional
 
 import async_timeout
+from scrapy.http import Request, Response
 from scrapy.utils.misc import create_instance, load_object
 
 from os_scrapy_rq_crawler.utils import (
@@ -25,30 +26,16 @@ class Slot(object):
     def __init__(self, scheduler, slot_id: str):
         self.slot_id = slot_id
         self.scheduler = scheduler
-        self.qids = None
+        self.qids = set()
         self.task = None
 
     def remove_qid(self, qid: QueueID):
-        if self.qids is None:
-            return
-        elif not isinstance(self.qids, set):
-            if self.qids == qid:
-                self.qids = None
-        elif qid in self.qids:
-            self.qids.remove(qid)
-            if len(self.qids) == 1:
-                self.qids = self.qids.pop()
+        self.qids.discard(qid)
         if qid in self.scheduler.qids:
             self.scheduler.qids.pop(qid)
 
     def add_qid(self, qid: QueueID):
-        if self.qids is None:
-            self.qids = qid
-        elif not isinstance(self.qids, set):
-            if self.qids != qid:
-                self.qids = set([self.qids, qid])
-        else:
-            self.qids.add(qid)
+        self.qids.add(qid)
         if qid not in self.scheduler.qids:
             self.scheduler.qids[qid] = (self.slot_id, time.time())
 
@@ -59,22 +46,16 @@ class Slot(object):
     def _clear(self):
         if not self.task:
             return
-        if self.qids:
-            if not isinstance(self.qids, set):
-                list(self.qids)
-            else:
-                [self.qids]
-            for qid in self.qids:
-                self.remove_qid(qid)
+        for qid in list(self.qids):
+            self.remove_qid(qid)
         self.task = None
         self.scheduler.slots.pop(self.slot_id, None)
 
     async def schedule(self) -> Optional[float]:
         if not self.qids:
             return
-        qid = self.qids
-        if isinstance(qid, set):
-            qid = random.choice(list(qid))
+
+        qid = random.choice(list(self.qids))
         request = self.scheduler.next_request(qid)
         if inspect.isawaitable(request):
             request = await request
@@ -82,11 +63,23 @@ class Slot(object):
         if request is None:
             self.remove_qid(qid)
             return
+
         request.meta["download_slot"] = self.slot_id
-        logger.debug(f"crawl {self.slot_id} {qid} {request}")
-        d = self.scheduler.fetch(request)
+        self.log(f"crawl {qid} {request}")
+
+        def on_downloaded(response, request, spider):
+            if self.slot_id.startswith("standby") and isinstance(response, Response):
+                self.remove_qid(qid)
+            elif isinstance(response, Request):
+                response.meta["_rq_fifo_"] = True
+                response.meta["_rq_qid_"] = qid
+            return response
+
+        d = self.scheduler.fetch(request, on_downloaded)
         await as_future(d)
-        return 10
+        if "download_delay" in request.meta:
+            return request.meta["download_delay"]
+        return self.scheduler.download_delay()
 
     def next_loop(self) -> bool:
         return bool(self.qids)
@@ -98,10 +91,10 @@ class Slot(object):
         self.log("slot schedule start")
         while self.next_loop():
             try:
-                wait = await self.scheduler.future_in_pool(self.schedule)
-                if wait is not None:
-                    self.log(f"wait {wait}")
-                    await asyncio.sleep(wait)
+                delay = await self.scheduler.future_in_pool(self.schedule)
+                if delay is not None and delay > 0:
+                    self.log(f"download delay {delay}")
+                    await asyncio.sleep(delay)
             except asyncio.CancelledError:
                 self.log("slot schedule cancelled", logging.WARNING)
                 break
@@ -124,10 +117,17 @@ class Scheduler(object):
         self.dispatch_queue: Optional[asyncio.Queue] = None
         self.start_requests_event = None
         self.tasks = []
+        self.spider = None
         self.ip_concurrency = self.settings.getint("CONCURRENT_REQUESTS_PER_IP")
+        self._download_delay = self.settings.getfloat("DOWNLOAD_DELAY")
         self.max_slots = max_slots
         self.standby_slots = standby_slots
         self.qids = {}
+
+    def download_delay(self) -> float:
+        if hasattr(self.spider, "download_delay"):
+            return spider.download_delay
+        return self._download_delay
 
     def should_stop(self) -> bool:
         return self.stopping and self.engine.spider_is_idle(self.spider)
@@ -159,14 +159,14 @@ class Scheduler(object):
                 slot_id = self.standby_slot_id(qid)
                 logger.warn(f"get slot fail {qid} {e} use {slot_id}")
         if slot_id not in self.slots:
-            logger.debug(f"new slot {slot_id} {qid.host}")
+            logger.debug(f"new slot {slot_id} {qid}")
             slot = Slot(self, slot_id)
             slot.start()
             self.slots[slot_id] = slot
         self.slots[slot_id].add_qid(qid)
 
     async def _dispatch(self, did):
-
+        logger.debug(f"dispatch-{did} start")
         while not self.should_stop():
             try:
                 if self.stopping:
@@ -184,7 +184,7 @@ class Scheduler(object):
                 logger.error(f"dispatch error {qid} {e}")
             finally:
                 self.dispatch_queue.task_done()
-        logger.debug(f"dispatch task-{did} stopped")
+        logger.debug(f"dispatch-{did} stopped")
 
     def open(self, spider):
         self.spider = spider
@@ -240,8 +240,8 @@ class Scheduler(object):
     def future_in_pool(self, f, *args, **kwargs):
         return self.engine.future_in_pool(f, *args, **kwargs)
 
-    def fetch(self, request):
-        return self.engine.fetch(request, self.spider)
+    def fetch(self, request, on_downloaded=None):
+        return self.engine.fetch(request, self.spider, on_downloaded)
 
     @classmethod
     def from_crawler(cls, crawler) -> "Scheduler":
@@ -258,10 +258,10 @@ class Scheduler(object):
         standby_slots = settings.getint("SCHEDULER_STANDBY_SLOTS", int(concurrent / 4))
         return cls(crawler, rq, max_slots, standby_slots, crawler.stats)
 
-    def enqueue_request(self, request, head=False):
+    def enqueue_request(self, request):
         if self.start_requests_event and not self.start_requests_event.is_set():
             self.start_requests_event.set()
-        self.rq.push(request, head)
+        self.rq.push(request)
         if self.stats:
             self.stats.inc_value("scheduler/enqueued", spider=self.spider)
 

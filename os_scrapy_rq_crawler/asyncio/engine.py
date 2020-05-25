@@ -5,6 +5,7 @@ from time import time
 from scrapy import signals
 from scrapy.core.engine import ExecutionEngine
 from scrapy.utils.log import failure_to_exc_info
+from scrapy.utils.reactor import CallLaterOnce
 from twisted.internet import defer
 
 from os_scrapy_rq_crawler.utils import Pool, cancel_futures
@@ -40,18 +41,10 @@ class Slot(object):
         self._maybe_fire_closing()
 
     def start(self):
-        for f in (self._load_start_requests, self._close_idle):
+        for f in [
+            self._load_start_requests,
+        ]:
             self.tasks.append(asyncio.ensure_future(f()))
-
-    async def _close_idle(self):
-        while self.close_if_idle and self.engine.slot:
-            self._maybe_fire_closing()
-            try:
-                await asyncio.sleep(3)
-            except asyncio.CancelledError:
-                logger.debug("cancel close idle task")
-                break
-        logger.debug("close idle task stopped")
 
     async def _load_start_requests(self):
         count = 0
@@ -67,8 +60,9 @@ class Slot(object):
                 break
             except Exception as e:
                 logger.error(f"load start request fail {request} {e}")
-        logger.debug(f"load start requests stopped {count}")
+        logger.debug(f"load start requests {count} stopped")
         self.start_requests = None
+        CallLaterOnce(self._maybe_fire_closing).schedule()
 
     def close(self):
         if self.closing:
@@ -81,11 +75,15 @@ class Slot(object):
         self._maybe_fire_closing()
         return self.closing
 
+    def spider_is_idle(self) -> bool:
+        if self.close_if_idle or self.closing:
+            return not self.inprogress and self.engine.spider_is_idle(self.spider)
+        return False
+
     def _maybe_fire_closing(self):
-        if not self.closing:
-            if self.close_if_idle and self.engine.spider_is_idle(self.spider):
+        if self.spider_is_idle():
+            if self.close_if_idle:
                 self.engine._spider_idle(self.spider)
-        elif not self.inprogress and self.engine.spider_is_idle(self.spider):
             if self.close_wait:
                 self.close_wait.callback(None)
                 self.close_wait = None
@@ -132,13 +130,6 @@ class Engine(ExecutionEngine):
 
     def unpause(self):
         self._pool.unpause()
-
-    def crawl(self, request, spider):
-        if spider not in self.open_spiders:
-            raise RuntimeError(
-                "Spider %r not opened when crawling: %s" % (spider.name, request)
-            )
-        self.schedule(request, spider)
 
     def fetch(self, request, spider, on_downloaded=None):
         slot = self.slot

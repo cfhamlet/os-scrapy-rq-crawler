@@ -164,6 +164,8 @@ class QueueID(namedtuple("QueueID", "host port scheme")):
 
 
 def qid_from_request(request: Request):
+    if "_rq_qid_" in request.meta:
+        return request.meta["_rq_qid_"]
     return qid_from_url(request.url)
 
 
@@ -204,13 +206,13 @@ class MemoryRequestQueue(object):
             return 0
         return len(self._queues[qid])
 
-    def push(self, request, head=False):
+    def push(self, request):
         qid = qid_from_request(request)
         if qid not in self._queues:
             self._queues[qid] = queue.FifoMemoryQueue()
         q = self._queues[qid]
         f = q.push
-        if head:
+        if "_rq_fifo_" in request.meta:
             f = q.q.appendleft
         f(request)
         self._num += 1
