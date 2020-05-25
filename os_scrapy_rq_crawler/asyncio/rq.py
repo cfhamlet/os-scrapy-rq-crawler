@@ -22,30 +22,24 @@ class AsyncRequestQueue(object):
         try:
             rqids = await self.rq.qids(r)
         except Exception as e:
-            logger.error(f"invoke qids {e}")
+            logger.error(f"qids {e}")
         if not rqids:
             return qids
         qids.extend(rqids)
         return set(qids)
 
     async def pop(self, qid=None):
-        qsize = self.mq.qsize(qid)
-        if qsize > 0:
-            r = self.mq.pop(qid)
-            logger.debug(
-                f"dequeue qid:{qid} qsize:{qsize-1} mq_size:{len(self.mq)} {r}"
-            )
-            return r
+        if self.mq.qsize(qid) > 0:
+            return self.mq.pop(qid)
         if self.closing():
             return None
         try:
             return await self.rq.pop(qid)
         except Exception as e:
-            logger.error(f"invoke pop {qid} {e}")
+            logger.error(f"pop {qid} {e}")
 
     def push(self, request):
         self.mq.push(request)
-        logger.debug(f"enqueue mq_size:{len(self.mq)} {request}")
 
     def closing(self) -> bool:
         return bool(self.crawler.engine.slot.closing)
