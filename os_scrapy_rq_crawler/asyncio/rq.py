@@ -12,7 +12,8 @@ class AsyncRequestQueue(object):
         self.rq = rq
 
     async def qids(self, k=16):
-        qids = [] if len(self.mq) <= 0 else self.mq.qids(k)
+        m = int(k / 2)
+        qids = [] if len(self.mq) <= 0 else self.mq.qids(m if m else 1)
         if self.closing():
             return qids
         r = k - len(qids)
