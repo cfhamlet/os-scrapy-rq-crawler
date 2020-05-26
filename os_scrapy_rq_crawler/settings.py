@@ -16,8 +16,7 @@ NEWSPIDER_MODULE = "os_scrapy_rq_crawler.spiders"
 
 
 CRAWLER_CLASS = "os_scrapy_rq_crawler.asyncio.Crawler"
-SCHEDULER_REQUEST_QUEUE = "os_scrapy_rq_crawler.AsyncRequestQueue"
-RQ_API = "http://localhost:6789/api/"
+TWISTED_REACTOR = "twisted.internet.asyncioreactor.AsyncioSelectorReactor"
 
 # Crawl responsibly by identifying yourself (and your website) on the user-agent
 # USER_AGENT = 'os_scrapy_rq_crawler (+http://www.yourdomain.com)'
