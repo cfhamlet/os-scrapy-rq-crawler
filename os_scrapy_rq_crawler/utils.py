@@ -1,9 +1,13 @@
 import asyncio
-from urllib.parse import urljoin
+import random
+from collections import namedtuple
+from urllib.parse import urljoin, urlparse
 
 import aiohttp
 import async_timeout
+from queuelib import queue
 from scrapy.http.request import Request
+from scrapy.utils.defer import maybeDeferred_coro
 from twisted.internet import defer
 
 try:
@@ -67,7 +71,7 @@ async def raw_request_from_rq(api, qid, timeout=0):
     return status, ret, api_url
 
 
-async def raw_queues_from_rq(api, k=10, timeout=0):
+async def raw_queues_from_rq(api, k=16, timeout=0):
     api_url = urljoin(api, "queues/?k=%d" % k)
     status, ret = await post_rq(api_url, timeout=timeout)
     return status, ret, api_url
@@ -102,3 +106,175 @@ def request_from_json(
         flags=flags,
         cb_kwargs=cb_kwargs,
     )
+
+
+class Pool(object):
+    def __init__(self, size):
+        assert size > 0
+        self.pool = asyncio.Queue()
+        self.count = 0
+        self.size = size
+        self.paused = asyncio.Event()
+
+    def pause(self):
+        self.paused.clear()
+
+    def unpause(self):
+        self.paused.set()
+
+    def maybeDeferred(self, f, *args, **kwargs):
+        return maybeDeferred_coro(self.maybeFuture(f, *args, **kwargs))
+
+    def maybeFuture(self, f, *args, **kwargs):
+        async def _call():
+            if self.count < self.size:
+                self.count += 1
+                try:
+                    await self.pool.put(self.count)
+                except asyncio.CancelledError:
+                    self.count -= 1
+                    raise
+            try:
+                q = await self.pool.get()
+            except asyncio.CancelledError:
+                raise
+
+            try:
+                await self.paused.wait()
+                r = await as_future(maybeDeferred_coro(f, *args, **kwargs))
+            finally:
+                self.pool.task_done()
+                await asyncio.shield(self.pool.put(q))
+            return r
+
+        return asyncio.ensure_future(_call())
+
+
+DEFAULT_SCHEME_PORT = {
+    "http": "80",
+    "https": "443",
+    "ftp": "21",
+    "ssh": "22",
+}
+
+
+class QueueID(namedtuple("QueueID", "host port scheme")):
+    def __str__(self):
+        return ":".join(self)
+
+
+def qid_from_request(request: Request):
+    if "_rq_qid_" in request.meta:
+        return request.meta["_rq_qid_"]
+    return qid_from_url(request.url)
+
+
+def qid_from_string(s: str):
+    c = s.split(":")
+    assert len(c) == 3
+    return QueueID(*c)
+
+
+def qid_from_url(url: str):
+    t = url.find("/", 8)
+    if t > 0:
+        url = url[0 : t + 1]
+    p = urlparse(url)
+    host = p.hostname
+    port = str(p.port) if p.port is not None else ""
+    scheme = p.scheme
+    if scheme in DEFAULT_SCHEME_PORT:
+        if DEFAULT_SCHEME_PORT[scheme] == port:
+            port = ""
+    return QueueID(host, port, scheme)
+
+
+def class_fullname(cls):
+    return f"{cls.__module__}.{cls.__name__}"
+
+
+class MemoryRequestQueue(object):
+    def __init__(self):
+        self._queues = {}
+        self._num = 0
+
+    def qids(self, k=16):
+        return random.sample(self._queues.keys(), min(k, len(self._queues)))
+
+    def qsize(self, qid):
+        if qid not in self._queues:
+            return 0
+        return len(self._queues[qid])
+
+    def push(self, request):
+        qid = qid_from_request(request)
+        if qid not in self._queues:
+            self._queues[qid] = queue.FifoMemoryQueue()
+        q = self._queues[qid]
+        f = q.push
+        if "_rq_fifo_" in request.meta:
+            f = q.q.appendleft
+        f(request)
+        self._num += 1
+
+    def pop(self, qid=None):
+        if not self._queues:
+            return None
+        if qid is None:
+            qid = random.choice(list(self._queues.keys()))
+        elif qid not in self._queues:
+            return None
+        queue = self._queues[qid]
+        request = queue.pop()
+        if len(queue) <= 0:
+            del self._queues[qid]
+            queue.close()
+        self._num -= 1
+        return request
+
+    def __len__(self):
+        return self._num
+
+    def close(self):
+        active = []
+        for p, q in self._queues.items():
+            active.append(p)
+            q.close()
+        return active
+
+
+class HTTPRequestQueue(object):
+    def __init__(self, api, timeout=0):
+        self.api = api
+        self.timeout = timeout
+
+    async def qids(self, k=16):
+        status, ret, api_url = await queues_from_rq(self.api, k, self.timeout)
+        if status == 200:
+            qids = []
+            for q in ret["queues"]:
+                qids.append(qid_from_string(q["qid"]))
+            return qids
+
+    async def pop(self, qid):
+        status, ret, api_url = await request_from_rq(self.api, str(qid), self.timeout)
+        if status == 200:
+            return ret
+
+    def push(self, request):
+        pass
+
+    def __len__(self):
+        return 1
+
+    def close(self):
+        pass
+
+
+def cancel_futures(futures):
+    dlist = []
+    for future in futures:
+        if not future.done() and not future.cancelled():
+            future.cancel()
+        dlist.append(maybeDeferred_coro(lambda: future))
+    return defer.DeferredList(dlist)
