@@ -115,7 +115,6 @@ class Scheduler(object):
         self.stopping = False
         self.slots = OrderedDict()
         self.dispatch_queue: Optional[asyncio.Queue] = None
-        self.start_requests_event = None
         self.tasks = []
         self.spider = None
         self.ip_concurrency = self.settings.getint("CONCURRENT_REQUESTS_PER_IP")
@@ -196,9 +195,6 @@ class Scheduler(object):
         return self.stopping
 
     async def update_slots(self):
-        if self.start_requests_event:
-            await self.start_requests_event.wait()
-            self.start_requests_event = None
         s = time.time()
         k = self.max_slots - len(self.slots)
         if k > 0:
@@ -215,8 +211,6 @@ class Scheduler(object):
 
     def start(self):
         logger.debug("Start")
-        if self.engine.slot.start_requests:
-            self.start_requests_event = asyncio.Event()
         self.tasks.append(asyncio.ensure_future(self._schedule()))
         dsp = self.crawler.settings.getint(
             "SCHEDULE_DISPATCH_TASKS", self.standby_slots
@@ -268,8 +262,6 @@ class Scheduler(object):
         return cls(crawler, rq, max_slots, standby_slots, crawler.stats)
 
     def enqueue_request(self, request):
-        if self.start_requests_event and not self.start_requests_event.is_set():
-            self.start_requests_event.set()
         self.rq.push(request)
         if self.stats:
             self.stats.inc_value("scheduler/enqueued", spider=self.spider)

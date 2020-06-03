@@ -30,8 +30,14 @@ class Slot(object):
         self.close_if_idle = close_if_idle
         self.scheduler = scheduler
         self.nextcall = NextCall()
-        self.start_requests = iter(start_requests)
+        self.start_requests = iter(start_requests) if start_requests else ()
         self.tasks = []
+        self.start_requests_deferred = defer.Deferred()
+
+    def _maybe_first_request(self):
+        if self.start_requests_deferred:
+            self.start_requests_deferred.callback(None)
+            self.start_requests_deferred = None
 
     def add_request(self, request):
         self.inprogress.add(request)
@@ -45,6 +51,7 @@ class Slot(object):
             self._load_start_requests,
         ]:
             self.tasks.append(asyncio.ensure_future(f()))
+        return self.start_requests_deferred
 
     async def _load_start_requests(self):
         count = 0
@@ -54,12 +61,14 @@ class Slot(object):
                 await self.engine.future_in_pool(
                     self.engine.crawl, request, self.spider
                 )
+                self._maybe_first_request()
                 logger.debug(f"load start request {count} {request}")
             except asyncio.CancelledError:
                 logger.warn("load start requests task cancelled")
                 break
             except Exception as e:
                 logger.error(f"load start request fail {request} {e}")
+        self._maybe_first_request()
         logger.debug(f"load start requests {count} stopped")
         self.start_requests = None
         CallLaterOnce(self._maybe_fire_closing).schedule()
@@ -99,9 +108,10 @@ class Engine(ExecutionEngine):
         logger.info("Spider opened", extra={"spider": spider})
         self.spider = spider
         scheduler = self.scheduler_cls.from_crawler(self.crawler)
-        start_requests = yield self.scraper.spidermw.process_start_requests(
-            start_requests, spider
-        )
+        if start_requests:
+            start_requests = yield self.scraper.spidermw.process_start_requests(
+                start_requests, spider
+            )
         self.slot = Slot(self, spider, scheduler, start_requests, close_if_idle)
         yield scheduler.open(spider)
         yield self.scraper.open_spider(spider)
@@ -116,9 +126,9 @@ class Engine(ExecutionEngine):
         self.start_time = time()
         yield self.signals.send_catch_log_deferred(signal=signals.engine_started)
         self.running = True
-        yield self.slot.scheduler.start()
-        yield self.slot.start()
         self.unpause()
+        yield self.slot.start()
+        yield self.slot.scheduler.start()
         self._closewait = defer.Deferred()
         yield self._closewait
 
