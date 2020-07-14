@@ -1,2 +1,2 @@
-os-scrapy>=0.0.4
+os-scrapy>=0.0.11
 aiohttp>=3.6.2
