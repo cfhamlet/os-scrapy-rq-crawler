@@ -71,8 +71,8 @@ class Slot(object):
             if self.slot_id.startswith("standby") and isinstance(response, Response):
                 self.remove_qid(qid)
             elif isinstance(response, Request):
-                response.meta["_rq_fifo_"] = True
-                response.meta["_rq_qid_"] = qid
+                response.meta["rq.lifo"] = True
+                response.meta["rq.qid"] = qid
             return response
 
         d = self.scheduler.fetch(request, on_downloaded)
