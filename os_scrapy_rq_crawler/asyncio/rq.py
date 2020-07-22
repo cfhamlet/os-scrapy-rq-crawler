@@ -30,14 +30,13 @@ class AsyncRequestQueue(object):
         return set(qids)
 
     async def pop(self, qid=None):
+
         if self.mq.qsize(qid) > 0:
             return self.mq.pop(qid)
         if self.closing():
             return None
-        try:
-            return await self.rq.pop(qid)
-        except Exception as e:
-            logger.error(f"pop {qid} {e}")
+
+        return await self.rq.pop(qid)
 
     def push(self, request):
         self.mq.push(request)
