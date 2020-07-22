@@ -19,6 +19,8 @@ from os_scrapy_rq_crawler.utils import (
 
 logger = logging.getLogger(__name__)
 
+S_DOWNLOAD_DELAY = "download_delay"
+
 
 class Slot(object):
     __slots__ = ("slot_id", "scheduler", "qids", "task")
@@ -77,8 +79,8 @@ class Slot(object):
 
         d = self.scheduler.fetch(request, on_downloaded)
         await as_future(d)
-        if "download_delay" in request.meta:
-            return request.meta["download_delay"]
+        if S_DOWNLOAD_DELAY in request.meta:
+            return request.meta[S_DOWNLOAD_DELAY]
         return self.scheduler.download_delay()
 
     def next_loop(self) -> bool:
@@ -124,7 +126,7 @@ class Scheduler(object):
         self.qids = {}
 
     def download_delay(self) -> float:
-        if hasattr(self.spider, "download_delay"):
+        if hasattr(self.spider, S_DOWNLOAD_DELAY):
             return spider.download_delay
         return self._download_delay
 
