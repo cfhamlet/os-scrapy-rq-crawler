@@ -1,5 +1,7 @@
 import asyncio
+import logging
 import random
+import time
 from collections import namedtuple
 from urllib.parse import urljoin, urlparse
 
@@ -197,6 +199,7 @@ class MemoryRequestQueue(object):
     def __init__(self):
         self._queues = {}
         self._num = 0
+        self.logger = logging.getLogger(self.__class__.__name__)
 
     def qids(self, k=16):
         return random.sample(self._queues.keys(), min(k, len(self._queues)))
@@ -218,6 +221,12 @@ class MemoryRequestQueue(object):
         self._num += 1
 
     def pop(self, qid=None):
+        s = time.time()
+        r = self._pop(qid)
+        self.logger.debug(f"pop from {qid} {time.time()-s:.5f} {r}")
+        return r
+
+    def _pop(self, qid=None):
         if not self._queues:
             return None
         if qid is None:
@@ -247,6 +256,7 @@ class HTTPRequestQueue(object):
     def __init__(self, api, timeout=0):
         self.api = api
         self.timeout = timeout
+        self.logger = logging.getLogger(self.__class__.__name__)
 
     async def qids(self, k=16):
         status, ret, api_url = await queues_from_rq(self.api, k, self.timeout)
@@ -257,9 +267,20 @@ class HTTPRequestQueue(object):
             return qids
 
     async def pop(self, qid):
-        status, ret, api_url = await request_from_rq(self.api, str(qid), self.timeout)
-        if status == 200:
-            return ret
+        def _log(f, s, m):
+            f(f"pop from {qid} {time.time()-s:.5f} {m}")
+
+        s = time.time()
+        try:
+            status, ret, api_url = await request_from_rq(
+                self.api, str(qid), self.timeout
+            )
+            if status == 200:
+                _log(self.logger.debug, s, ret)
+                return ret
+            _log(self.logger.warning, s, f"{status} {ret}")
+        except Exception as e:
+            _log(self.logger.error, s, e)
 
     def push(self, request):
         pass
