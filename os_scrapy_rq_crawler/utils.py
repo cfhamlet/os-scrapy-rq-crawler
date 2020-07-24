@@ -164,10 +164,12 @@ class QueueID(namedtuple("QueueID", "host port scheme")):
     def __str__(self):
         return ":".join(self)
 
+    __repr__ = __str__
+
 
 def qid_from_request(request: Request):
-    if "_rq_qid_" in request.meta:
-        return request.meta["_rq_qid_"]
+    if "rq.qid" in request.meta:
+        return request.meta["rq.qid"]
     return qid_from_url(request.url)
 
 
@@ -182,7 +184,7 @@ def qid_from_url(url: str):
     if t > 0:
         url = url[0 : t + 1]
     p = urlparse(url)
-    host = p.hostname
+    host = p.hostname if p.hostname else ""
     port = str(p.port) if p.port is not None else ""
     scheme = p.scheme
     if scheme in DEFAULT_SCHEME_PORT:

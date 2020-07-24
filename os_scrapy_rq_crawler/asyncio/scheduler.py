@@ -75,6 +75,7 @@ class Slot(object):
             elif isinstance(response, Request):
                 response.meta["rq.lifo"] = True
                 response.meta["rq.qid"] = qid
+                request.meta[S_DOWNLOAD_DELAY] = None  # redirct without waiting
             return response
 
         d = self.scheduler.fetch(request, on_downloaded)
