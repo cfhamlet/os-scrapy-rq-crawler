@@ -58,9 +58,12 @@ CONCURRENT_REQUESTS_PER_IP = 16
 
 # Enable or disable downloader middlewares
 # See https://docs.scrapy.org/en/latest/topics/downloader-middleware.html
-# DOWNLOADER_MIDDLEWARES = {
-#    'os_scrapy_rq_crawler.middlewares.ScrapyRqCrawlerDownloaderMiddleware': 543,
-# }
+DOWNLOADER_MIDDLEWARES = {
+    "scrapy.downloadermiddlewares.redirect.MetaRefreshMiddleware": None,
+    "os_scrapy_rq_crawler.middlewares.MetaRefreshMiddleware": 580,
+    "scrapy.downloadermiddlewares.redirect.RedirectMiddleware": None,
+    "os_scrapy_rq_crawler.middlewares.RedirectMiddleware": 600,
+}
 
 # Enable or disable extensions
 # See https://docs.scrapy.org/en/latest/topics/extensions.html

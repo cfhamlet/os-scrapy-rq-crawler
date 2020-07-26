@@ -73,9 +73,9 @@ class Slot(object):
             if self.slot_id.startswith("standby") and isinstance(response, Response):
                 self.remove_qid(qid)
             elif isinstance(response, Request):
-                response.meta["rq.lifo"] = True
+                if "rq.enqueue" not in response.meta:
+                    response.meta["rq.enqueue"] = "lifo"
                 response.meta["rq.qid"] = qid
-                request.meta[S_DOWNLOAD_DELAY] = None  # redirct without waiting
             return response
 
         d = self.scheduler.fetch(request, on_downloaded)
@@ -205,9 +205,11 @@ class Scheduler(object):
             if qids:
                 if inspect.isawaitable(qids):
                     qids = await qids
-                for qid in qids:
-                    if qid not in self.qids:
-                        await self.dispatch_queue.put(qid)
+                puts = [
+                    self.dispatch_queue.put(qid) for qid in qids if qid not in self.qids
+                ]
+                if puts:
+                    await asyncio.wait(puts, return_when=asyncio.ALL_COMPLETED)
         cost = time.time() - s
         if cost < 1:
             await asyncio.sleep(1 - cost)

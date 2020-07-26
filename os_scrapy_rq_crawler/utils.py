@@ -217,7 +217,7 @@ class MemoryRequestQueue(object):
             self._queues[qid] = queue.FifoMemoryQueue()
         q = self._queues[qid]
         f = q.push
-        if "rq.lifo" in request.meta and request.meta["rq.lifo"]:
+        if "rq.enqueue" in request.meta and request.meta["rq.enqueue"] == "lifo":
             f = q.q.appendleft
         f(request)
         self._num += 1
