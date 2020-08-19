@@ -68,7 +68,7 @@ async def post_rq(request_url, timeout=0):
 
 
 async def raw_request_from_rq(api, qid, timeout=0):
-    api_url = urljoin(api, "queue/pop/?q=%s" % qid)
+    api_url = urljoin(api, "queue/dequeue/?q=%s" % qid)
     status, ret = await post_rq(api_url, timeout=timeout)
     return status, ret, api_url
 
