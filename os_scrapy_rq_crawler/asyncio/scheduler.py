@@ -95,7 +95,14 @@ class Slot(object):
         while self.next_loop():
             try:
                 delay = await self.scheduler.future_in_pool(self.schedule)
-                if delay is not None and delay > 0:
+                if delay is not None:
+                    try:
+                        delay = float(delay)
+                        if delay < 0:
+                            raise ValueError("must >= 0")
+                    except Exception as e:
+                        self.log(f"invalid delay {repr(delay)} {e}", logging.WARNING)
+                        delay = self.scheduler.download_delay()
                     self.log(f"download delay {delay}")
                     await asyncio.sleep(delay)
             except asyncio.CancelledError:
