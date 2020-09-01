@@ -256,7 +256,8 @@ class Scheduler(object):
         settings = crawler.settings
         rq_cls = load_object(
             settings.get(
-                "SCHEDULER_REQUEST_QUEUE", "os_scrapy_rq_crawler.MemoryRequestQueue",
+                "SCHEDULER_REQUEST_QUEUE",
+                "os_scrapy_rq_crawler.MemoryRequestQueue",
             )
         )
         rq = create_instance(rq_cls, settings, crawler)
