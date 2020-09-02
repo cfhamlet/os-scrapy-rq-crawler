@@ -1,9 +1,10 @@
 import asyncio
+import binascii
 import logging
 import random
 import time
 from collections import namedtuple
-from urllib.parse import urljoin, urlparse
+from urllib.parse import quote_plus, urljoin, urlparse
 
 import aiohttp
 import async_timeout
@@ -16,6 +17,11 @@ try:
     import ujson as json
 except:
     import json
+
+
+def to_hexstr(s, encoding="utf-8"):
+    s = s.encode(encoding)
+    return binascii.hexlify(s).decode()
 
 
 def as_future(d):
@@ -68,7 +74,7 @@ async def post_rq(request_url, timeout=0):
 
 
 async def raw_request_from_rq(api, qid, timeout=0):
-    api_url = urljoin(api, "queue/dequeue/?q=%s" % qid)
+    api_url = urljoin(api, "queue/dequeue/?q=%s" % quote_plus(str(qid)))
     status, ret = await post_rq(api_url, timeout=timeout)
     return status, ret, api_url
 
