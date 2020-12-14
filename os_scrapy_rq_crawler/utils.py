@@ -7,7 +7,7 @@ from collections import namedtuple
 from urllib.parse import quote_plus, urljoin, urlparse
 
 import aiohttp
-import async_timeout
+from aiohttp.helpers import sentinel
 from queuelib import queue
 from scrapy.http.request import Request
 from scrapy.utils.defer import maybeDeferred_coro
@@ -32,7 +32,7 @@ def as_deferred(f):
     return defer.Deferred.fromFuture(asyncio.ensure_future(f))
 
 
-async def queues_from_rq(api, k=16, timeout=0):
+async def queues_from_rq(api, k=16, timeout=sentinel):
     status, ret, api_url = await raw_queues_from_rq(api, k, timeout)
     if status == 200:
         ret = queues_from_json(ret)
@@ -64,22 +64,28 @@ async def request_from_rq(
     return status, ret, api_url
 
 
-async def post_rq(request_url, timeout=0):
-    async with aiohttp.ClientSession() as session:
-        with async_timeout.timeout(timeout):
-            async with session.post(request_url) as response:
-                status = response.status
-                text = await response.text()
-                return status, text.strip()
+async def post_rq(request_url, timeout=sentinel):
+    if timeout is None:
+        timeout = sentinel
+    elif isinstance(timeout, (int, float)):
+        if timeout <= 0:
+            timeout = sentinel
+        else:
+            timeout = aiohttp.ClientTimeout(total=timeout)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.post(request_url) as response:
+            status = response.status
+            text = await response.text()
+            return status, text.strip()
 
 
-async def raw_request_from_rq(api, qid, timeout=0):
+async def raw_request_from_rq(api, qid, timeout=sentinel):
     api_url = urljoin(api, "queue/dequeue/?q=%s" % quote_plus(str(qid)))
     status, ret = await post_rq(api_url, timeout=timeout)
     return status, ret, api_url
 
 
-async def raw_queues_from_rq(api, k=16, timeout=0):
+async def raw_queues_from_rq(api, k=16, timeout=sentinel):
     api_url = urljoin(api, "queues/?k=%d" % k)
     status, ret = await post_rq(api_url, timeout=timeout)
     return status, ret, api_url
@@ -261,28 +267,27 @@ class MemoryRequestQueue(object):
 
 
 class HTTPRequestQueue(object):
-    def __init__(self, api, timeout=0):
+    def __init__(self, api, timeout=None):
         self.api = api
         self.timeout = timeout
         self.logger = logging.getLogger(self.__class__.__name__)
 
-    async def qids(self, k=16):
-        status, ret, api_url = await queues_from_rq(self.api, k, self.timeout)
+    async def qids(self, k=16, timeout=None):
+        if not timeout:
+            timeout = self.timeout
+        status, ret, api_url = await queues_from_rq(self.api, k, timeout)
         if status == 200:
-            qids = []
-            for q in ret["queues"]:
-                qids.append(qid_from_string(q["qid"]))
-            return qids
+            return [qid_from_string(q["qid"]) for q in ret["queues"]]
 
-    async def pop(self, qid):
+    async def pop(self, qid, timeout=None):
         def _log(f, s, m):
             f(f"pop from {qid} {time.time()-s:.5f} {m}")
 
         s = time.time()
         try:
-            status, ret, api_url = await request_from_rq(
-                self.api, str(qid), self.timeout
-            )
+            if not timeout:
+                timeout = self.timeout
+            status, ret, api_url = await request_from_rq(self.api, str(qid), timeout)
             if status == 200:
                 _log(self.logger.debug, s, ret)
                 return ret

@@ -207,17 +207,21 @@ class Scheduler(object):
     async def update_slots(self):
         s = time.time()
         k = self.max_slots - len(self.slots)
+        puts = []
         if k > 0:
             qids = self.rq.qids(k=k)
             if qids:
                 if inspect.isawaitable(qids):
                     qids = await qids
                 puts = [
-                    self.dispatch_queue.put(qid) for qid in qids if qid not in self.qids
+                    self.dispatch_queue.put(qid)
+                    for qid in qids
+                    if qid is not None and qid not in self.qids
                 ]
                 if puts:
                     await asyncio.wait(puts, return_when=asyncio.ALL_COMPLETED)
         cost = time.time() - s
+        logger.debug(f"update slots:{len(puts)} cost:{cost:.5f}")
         if cost < 1:
             await asyncio.sleep(1 - cost)
 
