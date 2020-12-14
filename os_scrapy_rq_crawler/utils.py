@@ -7,7 +7,7 @@ from collections import namedtuple
 from urllib.parse import quote_plus, urljoin, urlparse
 
 import aiohttp
-import async_timeout
+from aiohttp.helpers import sentinel
 from queuelib import queue
 from scrapy.http.request import Request
 from scrapy.utils.defer import maybeDeferred_coro
@@ -32,7 +32,7 @@ def as_deferred(f):
     return defer.Deferred.fromFuture(asyncio.ensure_future(f))
 
 
-async def queues_from_rq(api, k=16, timeout=0):
+async def queues_from_rq(api, k=16, timeout=sentinel):
     status, ret, api_url = await raw_queues_from_rq(api, k, timeout)
     if status == 200:
         ret = queues_from_json(ret)
@@ -64,22 +64,28 @@ async def request_from_rq(
     return status, ret, api_url
 
 
-async def post_rq(request_url, timeout=0):
-    async with aiohttp.ClientSession() as session:
-        with async_timeout.timeout(timeout):
-            async with session.post(request_url) as response:
-                status = response.status
-                text = await response.text()
-                return status, text.strip()
+async def post_rq(request_url, timeout=sentinel):
+    if timeout is None:
+        timeout = sentinel
+    elif isinstance(timeout, (int, float)):
+        if timeout <= 0:
+            timeout = sentinel
+        else:
+            timeout = aiohttp.ClientTimeout(total=timeout)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.post(request_url) as response:
+            status = response.status
+            text = await response.text()
+            return status, text.strip()
 
 
-async def raw_request_from_rq(api, qid, timeout=0):
+async def raw_request_from_rq(api, qid, timeout=sentinel):
     api_url = urljoin(api, "queue/dequeue/?q=%s" % quote_plus(str(qid)))
     status, ret = await post_rq(api_url, timeout=timeout)
     return status, ret, api_url
 
 
-async def raw_queues_from_rq(api, k=16, timeout=0):
+async def raw_queues_from_rq(api, k=16, timeout=sentinel):
     api_url = urljoin(api, "queues/?k=%d" % k)
     status, ret = await post_rq(api_url, timeout=timeout)
     return status, ret, api_url
