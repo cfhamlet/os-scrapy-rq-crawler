@@ -267,28 +267,27 @@ class MemoryRequestQueue(object):
 
 
 class HTTPRequestQueue(object):
-    def __init__(self, api, timeout=0):
+    def __init__(self, api, timeout=None):
         self.api = api
         self.timeout = timeout
         self.logger = logging.getLogger(self.__class__.__name__)
 
-    async def qids(self, k=16):
-        status, ret, api_url = await queues_from_rq(self.api, k, self.timeout)
+    async def qids(self, k=16, timeout=None):
+        if not timeout:
+            timeout = self.timeout
+        status, ret, api_url = await queues_from_rq(self.api, k, timeout)
         if status == 200:
-            qids = []
-            for q in ret["queues"]:
-                qids.append(qid_from_string(q["qid"]))
-            return qids
+            return [qid_from_string(q["qid"]) for q in ret["queues"]]
 
-    async def pop(self, qid):
+    async def pop(self, qid, timeout=None):
         def _log(f, s, m):
             f(f"pop from {qid} {time.time()-s:.5f} {m}")
 
         s = time.time()
         try:
-            status, ret, api_url = await request_from_rq(
-                self.api, str(qid), self.timeout
-            )
+            if not timeout:
+                timeout = self.timeout
+            status, ret, api_url = await request_from_rq(self.api, str(qid), timeout)
             if status == 200:
                 _log(self.logger.debug, s, ret)
                 return ret
