@@ -104,12 +104,11 @@ class UpstreamRequestQueue(object):
             return await upstream.qids(k, timeout=timeout)
 
     async def pop(self, qid, timeout=None):
-        if not isinstance(qid, NamedQueueID):
-            return
-        async with self.rwlock.reader_lock:
-            upstream = self._upstream(qid.name)
-            if upstream is not None:
-                return await upstream.pop(qid.qid, timeout=timeout)
+        if isinstance(qid, NamedQueueID):
+            async with self.rwlock.reader_lock:
+                upstream = self._upstream(qid.name)
+                if upstream is not None:
+                    return await upstream.pop(qid.qid, timeout=timeout)
 
     def __len__(self):
         return 1
