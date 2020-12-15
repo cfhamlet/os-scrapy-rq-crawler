@@ -17,9 +17,9 @@ from os_scrapy_rq_crawler.utils import (
     class_fullname,
 )
 
-logger = logging.getLogger(__name__)
-
 S_DOWNLOAD_DELAY = "download_delay"
+
+logger = logging.getLogger(__name__)
 
 
 class Slot(object):
@@ -132,6 +132,7 @@ class Scheduler(object):
         self.max_slots = max_slots
         self.standby_slots = standby_slots
         self.qids = {}
+        self.logger = logging.getLogger(self.__class__.__name__)
 
     def download_delay(self) -> float:
         if hasattr(self.spider, S_DOWNLOAD_DELAY):
@@ -151,7 +152,7 @@ class Scheduler(object):
             slot_id = str(qid)
         return slot_id
 
-    async def _dispatch_slot(self, qid: QueueID):
+    async def _dispatch_slot(self, qid):
         if not qid or qid in self.qids:
             return
         from twisted.internet import reactor
@@ -166,16 +167,16 @@ class Scheduler(object):
                 raise
             except Exception as e:
                 slot_id = self.standby_slot_id(qid)
-                logger.warn(f"get slot fail {qid} {e} use {slot_id}")
+                self.logger.warn(f"get slot fail {qid} {e} use {slot_id}")
         if slot_id not in self.slots:
-            logger.debug(f"new slot {slot_id} {qid}")
+            self.logger.debug(f"new slot {slot_id} {qid}")
             slot = Slot(self, slot_id)
             slot.start()
             self.slots[slot_id] = slot
         self.slots[slot_id].add_qid(qid)
 
     async def _dispatch(self, did):
-        logger.debug(f"dispatch-{did} start")
+        self.logger.debug(f"dispatch-{did} start")
         while not self.should_stop():
             try:
                 if self.stopping:
@@ -190,10 +191,10 @@ class Scheduler(object):
             except asyncio.CancelledError:
                 pass
             except Exception as e:
-                logger.error(f"dispatch error {qid} {e}")
+                self.logger.error(f"dispatch error {qid} {e}")
             finally:
                 self.dispatch_queue.task_done()
-        logger.debug(f"dispatch-{did} stopped")
+        self.logger.debug(f"dispatch-{did} stopped")
 
     def open(self, spider):
         self.spider = spider
@@ -221,12 +222,12 @@ class Scheduler(object):
                 if puts:
                     await asyncio.wait(puts, return_when=asyncio.ALL_COMPLETED)
         cost = time.time() - s
-        logger.debug(f"update slots:{len(puts)} cost:{cost:.5f}")
+        self.logger.debug(f"update slots:{len(puts)} cost:{cost:.5f}")
         if cost < 1:
             await asyncio.sleep(1 - cost)
 
     def start(self):
-        logger.debug("Start")
+        self.logger.debug("Start")
         self.tasks.append(asyncio.ensure_future(self._schedule()))
         dsp = self.crawler.settings.getint(
             "SCHEDULE_DISPATCH_TASKS", self.standby_slots
@@ -241,10 +242,10 @@ class Scheduler(object):
             try:
                 await self.update_slots()
             except asyncio.CancelledError:
-                logger.debug("cancel schedule task")
+                self.logger.debug("cancel schedule task")
             except Exception as e:
-                logger.error(f"schedule {e}")
-        logger.debug(f"schedule task stopped")
+                self.logger.error(f"schedule {e}")
+        self.logger.debug(f"schedule task stopped")
 
     def next_request(self, qid=None):
         return self.rq.pop(qid)
@@ -288,4 +289,4 @@ class Scheduler(object):
 
     def close(self, reason):
         self.rq.close()
-        logger.debug("Closed")
+        self.logger.debug("Closed")

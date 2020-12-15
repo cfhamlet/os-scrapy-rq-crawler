@@ -4,8 +4,6 @@ from scrapy.crawler import Crawler as ScrapyCrawler
 from scrapy.settings import Settings
 from scrapy.utils.misc import load_object
 
-logger = logging.getLogger(__name__)
-
 
 class Crawler(ScrapyCrawler):
     default_settings = {}
@@ -15,6 +13,7 @@ class Crawler(ScrapyCrawler):
             settings = Settings(settings)
         settings.setdict(self.default_settings, "default")
         super(Crawler, self).__init__(spidercls, settings)
+        self.logger = logging.getLogger(self.__class__.__name__)
 
     def _create_engine(self):
         engine_class_path = self.settings.get("ENGINE", None)
@@ -25,5 +24,5 @@ class Crawler(ScrapyCrawler):
             engine_class = load_object(engine_class_path)
             engine = engine_class(self, lambda _: self.stop())
         p = f"{engine.__module__}.{engine.__class__.__name__}"
-        logger.debug(f"Using engine: {p}")
+        self.logger.debug(f"Using engine: {p}")
         return engine
