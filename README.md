@@ -121,6 +121,16 @@ RQ is just a conception can be implements in different ways.
         RQ_API_TIMEOUT = 3.0
         ```
 
+* ``os_scrapy_rq_crawler.MultiUpstreamRequestQueue``
+
+    - same as ``os_scrapy_rq_crawler.AsyncRequestQueue``, can configure multi upstreams request queues
+
+    - config the pod/hub http apis in the settings.py
+
+        ```
+        RQ_API = ["http://server01:6789/api/", "http://server02:6789/api/"]
+        ```
+
 ### FYI
 
 Our RQ mode Crawler is a substitute of the Scrapy built-in Crawler. Most of the Scrapy functionalities(middleware/extension) can also be used as normal.

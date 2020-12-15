@@ -2,14 +2,13 @@ import logging
 
 from os_scrapy_rq_crawler.utils import HTTPRequestQueue, MemoryRequestQueue
 
-logger = logging.getLogger(__name__)
-
 
 class AsyncRequestQueue(object):
     def __init__(self, crawler, mq, rq):
         self.crawler = crawler
         self.mq = mq
         self.rq = rq
+        self.logger = logging.getLogger(self.__class__.__name__)
 
     async def qids(self, k=16):
         m = int(k / 2)
@@ -23,7 +22,7 @@ class AsyncRequestQueue(object):
         try:
             rqids = await self.rq.qids(r)
         except Exception as e:
-            logger.error(f"qids {e}")
+            self.logger.error(f"qids {e}")
         if not rqids:
             return qids
         qids.extend(rqids)
@@ -62,6 +61,5 @@ class AsyncRequestQueue(object):
         assert "RQ_API" in settings, "RQ_API not configured"
         api = settings.get("RQ_API")
         timeout = settings.getfloat("RQ_API_TIMEOUT", 3)
-        logger.debug(f"RQ_API:{api} timeout:{timeout}")
         rq = HTTPRequestQueue(api, timeout)
         return cls(crawler, mq, rq)

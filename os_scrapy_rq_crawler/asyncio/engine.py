@@ -10,8 +10,6 @@ from twisted.internet import defer
 
 from os_scrapy_rq_crawler.utils import Pool, cancel_futures
 
-logger = logging.getLogger(__name__)
-
 
 class NextCall(object):
     def schedule(self):
@@ -33,6 +31,7 @@ class Slot(object):
         self.start_requests = iter(start_requests) if start_requests else ()
         self.tasks = []
         self.start_requests_deferred = defer.Deferred()
+        self.logger = logging.getLogger(self.__class__.__name__)
 
     def _maybe_first_request(self):
         if self.start_requests_deferred:
@@ -62,14 +61,14 @@ class Slot(object):
                     self.engine.crawl, request, self.spider
                 )
                 self._maybe_first_request()
-                logger.debug(f"load start request {count} {request}")
+                self.logger.debug(f"load start request {count} {request}")
             except asyncio.CancelledError:
-                logger.warn("load start requests task cancelled")
+                self.logger.warn("load start requests task cancelled")
                 break
             except Exception as e:
-                logger.error(f"load start request fail {request} {e}")
+                self.logger.error(f"load start request fail {request} {e}")
         self._maybe_first_request()
-        logger.debug(f"load start requests {count} stopped")
+        self.logger.debug(f"load start requests {count} stopped")
         self.start_requests = None
         CallLaterOnce(self._maybe_fire_closing).schedule()
 
@@ -102,10 +101,11 @@ class Engine(ExecutionEngine):
     def __init__(self, crawler, spider_closed_callback):
         super(Engine, self).__init__(crawler, spider_closed_callback)
         self._pool = Pool(self.crawler.settings.getint("CONCURRENT_REQUESTS", 16))
+        self.logger = logging.getLogger(self.__class__.__name__)
 
     @defer.inlineCallbacks
     def open_spider(self, spider, start_requests=(), close_if_idle=True):
-        logger.info("Spider opened", extra={"spider": spider})
+        self.logger.info("Spider opened", extra={"spider": spider})
         self.spider = spider
         scheduler = self.scheduler_cls.from_crawler(self.crawler)
         if start_requests:
@@ -148,7 +148,7 @@ class Engine(ExecutionEngine):
             d.addBoth(on_downloaded, request, spider)
         d.addBoth(self._handle_downloader_output, request, spider)
         d.addErrback(
-            lambda f: logger.info(
+            lambda f: self.logger.info(
                 "Error while handling downloader output",
                 exc_info=failure_to_exc_info(f),
                 extra={"spider": spider},
@@ -156,7 +156,7 @@ class Engine(ExecutionEngine):
         )
         d.addBoth(lambda _: slot.remove_request(request))
         d.addErrback(
-            lambda f: logger.info(
+            lambda f: self.logger.info(
                 "Error while removing request from slot",
                 exc_info=failure_to_exc_info(f),
                 extra={"spider": spider},

@@ -29,6 +29,7 @@ class NamedQueueID(namedtuple("NamedQueueID", "name qid")):
 class Upstream(HTTPRequestQueue):
     def __init__(self, name, api, timeout=None):
         super(Upstream, self).__init__(api, timeout)
+        self.logger = logging.getLogger(f"{self.__class__.__name__}-{name}")
         self.name = name
 
     async def qids(self, k=16, timeout=None):
@@ -130,7 +131,7 @@ class MultiUpstreamRequestQueue(AsyncRequestQueue):
             c = 0
             for api in apis:
                 if isinstance(api, str):
-                    name = f"upsteam-{c}"
+                    name = f"{c}"
                     upstreams[name] = Upstream(name, api, timeout)
                 elif isinstance(api, tuple):
                     upstreams[api[0]] = Upstream(api[0], api[1], timeout)
